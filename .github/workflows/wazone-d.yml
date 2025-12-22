@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       start_line:
-        description: '起始行'
+        description: '起始行 (Start Line)'
         required: true
         default: '1'
       end_line:
-        description: '结束行'
+        description: '到第几行结束 (End Line)'
         required: true
         default: '2000'
 
@@ -25,7 +25,7 @@ jobs:
       - name: Install Tools
         run: sudo apt-get install -y p7zip-full curl
 
-      - name: Mix-Resource Harvesting
+      - name: Precision Execution Loop
         id: run_harvest
         env:
           START: ${{ github.event.inputs.start_line }}
@@ -41,29 +41,41 @@ jobs:
           
           success_count, fail_count = 0, 0
           last_line = start - 1
-          failed_links = []
+          failed_details = []
+
+          # 确保读取项目根目录的 links 文件
+          if not os.path.exists('wazone_links.txt'):
+              print("!!! 错误：找不到 wazone_links.txt !!!")
+              sys.exit(1)
 
           with open('wazone_links.txt', 'r') as f:
-              lines = f.readlines()[start-1:end]
+              all_lines = f.readlines()
+              task_lines = all_lines[start-1:end]
 
-          print(f"--- 从第 {start} 行到第 {end} 行 ---")
-
-          for i, url in enumerate(lines):
+          for i, url in enumerate(task_lines):
               current_line = start + i
               url = url.strip()
-              if not url or not url.startswith('http'):
+              # 匹配域名
+              if not url or 'wazone-file.wahlap.net' not in url:
                   last_line = current_line
                   continue
               
-              # 自动处理所有类别的路径映射
-              path_part = url.split('.net/')[1]
+              # 解析路径：保留域名后的目录结构
+              try:
+                  path_part = url.split('wazone-file.wahlap.net/')[1]
+              except IndexError:
+                  continue
+
               local_path = os.path.join('harvest_zone', path_part)
               os.makedirs(os.path.dirname(local_path), exist_ok=True)
 
-              # 执行下载：针对混合资源优化的参数
-              cmd = ['curl', '-L', '-A', ua, '--retry', '3', '--retry-delay', '2', 
-                     '--connect-timeout', '30', '-e', 'https://wazone.wahlap.net/', 
-                     url, '-o', local_path]
+              # curl 执行：使用正确的域名和重试机制
+              cmd = [
+                  'curl', '-L', '-A', ua, 
+                  '--retry', '3', '--retry-delay', '2', '--connect-timeout', '30',
+                  '-e', 'https://wazone.wahlap.net/', 
+                  url, '-o', local_path
+              ]
               
               result = subprocess.run(cmd)
               last_line = current_line
@@ -72,39 +84,43 @@ jobs:
                   success_count += 1
               else:
                   fail_count += 1
-                  failed_links.append(f"Line {current_line}: {url}")
+                  failed_details.append(f"Line {current_line}: {url}")
 
-              # 磁盘动态监控
+              # 85% 磁盘安全熔断
               if i % 50 == 0:
                   usage = int(subprocess.check_output("df . --output=pcent | tail -1 | tr -dc '0-9'", shell=True))
                   if usage > 85:
-                      print(f"\n[!!!] 磁盘达 {usage}%，即将打包退出。")
+                      print(f"\n[ALERT] 磁盘占用 {usage}%，停止下载启动打包。")
                       break
           
-          # env number
-          print(f"\n[SUMMARY] 处理至: {last_line} | 成功: {success_count} | 失败: {fail_count}")
-          with open('failed_list.txt', 'w') as f_f: f_f.write("\n".join(failed_links))
+          next_start = last_line + 1
+          with open('failed_report.txt', 'w') as f_fail:
+              f_fail.write("\n".join(failed_details))
+
           with open(os.environ['GITHUB_ENV'], 'a') as env_file:
-              env_file.write(f"LAST_LINE={last_line}\nS_NUM={success_count}\nF_NUM={fail_count}\n")
+              env_file.write(f"LAST_LINE={last_line}\n")
+              env_file.write(f"NEXT_START={next_start}\n")
+              env_file.write(f"S_NUM={success_count}\n")
+              env_file.write(f"F_NUM={fail_count}\n")
           EOF
 
-      - name: Archive Chunks (1.9GB)
+      - name: Archive and Purge
         run: |
-          # mx0
-          7z a -v1900m -mx0 wazone_part_${{ github.event.inputs.start_line }}.7z ./harvest_zone/*
+          # 使用mx0极速模式，确保15%剩余空间内安全分卷
+          7z a -v1900m -mx0 wazone_vault_${{ github.event.inputs.start_line }}.7z ./harvest_zone/*
           rm -rf ./harvest_zone
 
-      - name: Commit to Vault
+      - name: Release to Vault
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "wazone-vault"
-          name: "Wazone line last - the ${{ env.LAST_LINE }} line"
+          name: "Wazone进度(进度: 第 ${{ env.LAST_LINE }} 行)"
           files: |
-            wazone_part_*.7z.*
-            failed_list.txt
+            wazone_vault_*.7z.*
+            failed_report.txt
           body: |
-            ### 。
-            - **other**: ${{ github.event.inputs.start_line }} - ${{ env.LAST_LINE }}
-            - **success**: ${{ env.S_NUM }}
-            - **next line txt**: ${{ env.LAST_LINE | plus(1) }}
+            ## done
+            - **完成区间**: 第 ${{ github.event.inputs.start_line }} 行 - 第 ${{ env.LAST_LINE }} 行
+            - **成功/失败**: ${{ env.S_NUM }} / ${{ env.F_NUM }}
+            - **下次运行起始行建议**: ${{ env.NEXT_START }}
             **。**
