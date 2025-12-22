@@ -1,0 +1,110 @@
+name: Wazone D
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_line:
+        description: '起始行'
+        required: true
+        default: '1'
+      end_line:
+        description: '结束行'
+        required: true
+        default: '2000'
+
+jobs:
+  harvest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v5
+
+      - name: Install Tools
+        run: sudo apt-get install -y p7zip-full curl
+
+      - name: Mix-Resource Harvesting
+        id: run_harvest
+        env:
+          START: ${{ github.event.inputs.start_line }}
+          END: ${{ github.event.inputs.end_line }}
+          UA: "UnityPlayer/2021.3.11f1c1 (UnityWebRequest/1.0)"
+        run: |
+          mkdir -p harvest_zone
+          python3 - <<EOF
+          import os, subprocess, sys
+
+          start, end = int(os.environ['START']), int(os.environ['END'])
+          ua = os.environ['UA']
+          
+          success_count, fail_count = 0, 0
+          last_line = start - 1
+          failed_links = []
+
+          with open('wazone_links.txt', 'r') as f:
+              lines = f.readlines()[start-1:end]
+
+          print(f"--- 从第 {start} 行到第 {end} 行 ---")
+
+          for i, url in enumerate(lines):
+              current_line = start + i
+              url = url.strip()
+              if not url or not url.startswith('http'):
+                  last_line = current_line
+                  continue
+              
+              # 自动处理所有类别的路径映射
+              path_part = url.split('.net/')[1]
+              local_path = os.path.join('harvest_zone', path_part)
+              os.makedirs(os.path.dirname(local_path), exist_ok=True)
+
+              # 执行下载：针对混合资源优化的参数
+              cmd = ['curl', '-L', '-A', ua, '--retry', '3', '--retry-delay', '2', 
+                     '--connect-timeout', '30', '-e', 'https://wazone.wahlap.net/', 
+                     url, '-o', local_path]
+              
+              result = subprocess.run(cmd)
+              last_line = current_line
+              
+              if result.returncode == 0:
+                  success_count += 1
+              else:
+                  fail_count += 1
+                  failed_links.append(f"Line {current_line}: {url}")
+
+              # 磁盘动态监控
+              if i % 50 == 0:
+                  usage = int(subprocess.check_output("df . --output=pcent | tail -1 | tr -dc '0-9'", shell=True))
+                  if usage > 85:
+                      print(f"\n[!!!] 磁盘达 {usage}%，即将打包退出。")
+                      break
+          
+          # env number
+          print(f"\n[SUMMARY] 处理至: {last_line} | 成功: {success_count} | 失败: {fail_count}")
+          with open('failed_list.txt', 'w') as f_f: f_f.write("\n".join(failed_links))
+          with open(os.environ['GITHUB_ENV'], 'a') as env_file:
+              env_file.write(f"LAST_LINE={last_line}\nS_NUM={success_count}\nF_NUM={fail_count}\n")
+          EOF
+
+      - name: Archive Chunks (1.9GB)
+        run: |
+          # mx0
+          7z a -v1900m -mx0 wazone_part_${{ github.event.inputs.start_line }}.7z ./harvest_zone/*
+          rm -rf ./harvest_zone
+
+      - name: Commit to Vault
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "wazone-vault"
+          name: "Wazone line last - the ${{ env.LAST_LINE }} line"
+          files: |
+            wazone_part_*.7z.*
+            failed_list.txt
+          body: |
+            ### 。
+            - **other**: ${{ github.event.inputs.start_line }} - ${{ env.LAST_LINE }}
+            - **success**: ${{ env.S_NUM }}
+            - **next line txt**: ${{ env.LAST_LINE | plus(1) }}
+            **。**
