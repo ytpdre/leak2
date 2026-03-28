@@ -3,3 +3,4 @@
 
 ：https://github.com/FoskyM/train-ticket-generator/tree/main
 ：https://www.elpwc.com/simticket?com=0&ticket=4simticket?com=0&ticket=4
+https://github.com/Project-HINATA/hinata_go
